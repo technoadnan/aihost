@@ -1,11 +1,11 @@
-from pprint import pprint
 import sqlite3
 import secrets
 import hashlib
+import config
 
 
 def get_db_connection():
-    conn = sqlite3.connect("aihost.db")
+    conn = sqlite3.connect(config.DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -95,24 +95,37 @@ def validate_api_key(api_key):
 
 
 def disable_api_key(api_id: int):
-    curr = get_db_connection()
-    cursor = curr.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
     find_id = cursor.execute(
         """SELECT is_active FROM api_keys WHERE id = ?""", (api_id,)
     )
     # if it returns None -> doesn't exist
     does_exist = find_id.fetchone()
     if does_exist is None:
-        raise ValueError("id is not present in the Database")
-    # if its already set to 0 -> ignore otherwise run command to make it 0
-    if 0 == does_exist[0]:
-        print(f"{api_id} already exists")
-    else:
-        cursor.execute("""UPDATE api_keys SET is_active = 0 where id = ?""", (api_id,))
-        print(f"succesfully set {api_id} to 0")
+        conn.close()
+        raise ValueError(f"api key id {api_id} is not present in the Database")
+    # if its already set to 0 -> nothing to do, otherwise make it 0
+    already_disabled = does_exist[0] == 0
+    if not already_disabled:
+        cursor.execute("""UPDATE api_keys SET is_active = 0 WHERE id = ?""", (api_id,))
+        conn.commit()
 
-    curr.commit()
-    cursor.close()
+    conn.close()
+    # True -> we disabled it now, False -> it was already disabled
+    return not already_disabled
+
+
+# list every key (never the raw key, we only have the hash)
+def list_api_keys():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, name, created_at, is_active FROM api_keys ORDER BY id"""
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 ########### usages_logs #################
@@ -142,6 +155,32 @@ def log_usage(
     )
     conn.commit()
     conn.close()
+
+
+# total requests / tokens / avg latency per key
+def get_usage_summary():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            k.id,
+            k.name,
+            COUNT(u.id),
+            COALESCE(SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(u.prompt_tokens), 0),
+            COALESCE(SUM(u.completion_tokens), 0),
+            COALESCE(SUM(u.total_tokens), 0),
+            COALESCE(AVG(u.latency_ms), 0)
+        FROM api_keys k
+        LEFT JOIN usage_logs u ON u.api_key_id = k.id
+        GROUP BY k.id
+        ORDER BY k.id
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 if __name__ == "__main__":
