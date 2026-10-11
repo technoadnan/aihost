@@ -19,3 +19,6 @@ ENV/
 *.log
 *.db
 tempCodeRunnerFile.py
+# model weights
+models/
+*.gguf
